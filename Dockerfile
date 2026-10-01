@@ -20,7 +20,7 @@ RUN npm run build
 # ──────────────────────────────────────────────────────────
 # Stage 2 — Production
 # ──────────────────────────────────────────────────────────
-FROM nginx:1.27-alpine
+FROM nginx:1.31.6-alpine3.24
 
 # Remove default Nginx configuration and static files
 RUN rm -rf /usr/share/nginx/html/* \
