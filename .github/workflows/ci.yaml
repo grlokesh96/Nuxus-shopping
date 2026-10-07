@@ -175,134 +175,6 @@ jobs:
           path: hadolint-report.sarif
           retention-days: 7
 
-  # ---------- Stage 2g: Convert SARIF reports to PDF ----------
-  sarif-to-pdf:
-    name: "Stage 2g: Convert SARIF Reports to PDF"
-    runs-on: ubuntu-latest
-    needs: [semgrep-scan, hadolint-scan]
-    if: always()
-    steps:
-      - name: Download Semgrep SARIF
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: semgrep-sarif
-          path: sarif-input
-
-      - name: Download Hadolint SARIF
-        uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: hadolint-report
-          path: sarif-input
-
-      - name: Install PDF conversion dependencies
-        run: python3 -m pip install --user reportlab
-
-      # FIX: the previous approach of piping raw SARIF (JSON) straight into a
-      # PDF/mail attachment failed because SARIF is structured JSON, not
-      # printable text. This renders each SARIF file into a proper,
-      # human-readable PDF report before anything gets attached/emailed.
-      - name: Convert SARIF files to PDF
-        run: |
-          export PATH="$PATH:$HOME/.local/bin"
-          mkdir -p sarif-pdf
-          cat > sarif_to_pdf.py <<'PYEOF'
-          import json
-          import os
-          import sys
-          from reportlab.lib.pagesizes import A4
-          from reportlab.lib.units import mm
-          from reportlab.lib.styles import getSampleStyleSheet
-          from reportlab.platypus import (
-              SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-          )
-          from reportlab.lib import colors
-
-          def load_sarif(path):
-              with open(path, "r", encoding="utf-8") as f:
-                  return json.load(f)
-
-          def extract_rows(sarif):
-              rows = [["Rule ID", "Severity", "Message", "Location"]]
-              tool_name = "unknown"
-              for run in sarif.get("runs", []):
-                  tool_name = run.get("tool", {}).get("driver", {}).get("name", "unknown")
-                  for result in run.get("results", []):
-                      rule_id = result.get("ruleId", "N/A")
-                      level = result.get("level", "note")
-                      message = result.get("message", {}).get("text", "")
-                      locations = result.get("locations", [])
-                      loc_str = "N/A"
-                      if locations:
-                          phys = locations[0].get("physicalLocation", {})
-                          uri = phys.get("artifactLocation", {}).get("uri", "N/A")
-                          line = phys.get("region", {}).get("startLine", "")
-                          loc_str = f"{uri}:{line}" if line else uri
-                      rows.append([rule_id, level, message[:200], loc_str])
-              return rows, tool_name
-
-          def build_pdf(sarif_path, pdf_path):
-              sarif = load_sarif(sarif_path)
-              rows, tool_name = extract_rows(sarif)
-              styles = getSampleStyleSheet()
-              doc = SimpleDocTemplate(pdf_path, pagesize=A4,
-                                       leftMargin=15 * mm, rightMargin=15 * mm,
-                                       topMargin=15 * mm, bottomMargin=15 * mm)
-              elements = [
-                  Paragraph(f"Security Scan Report: {tool_name}", styles["Title"]),
-                  Spacer(1, 8),
-                  Paragraph(f"Source file: {os.path.basename(sarif_path)}", styles["Normal"]),
-                  Paragraph(f"Total findings: {len(rows) - 1}", styles["Normal"]),
-                  Spacer(1, 12),
-              ]
-              if len(rows) > 1:
-                  wrapped = [rows[0]] + [
-                      [Paragraph(str(c), styles["BodyText"]) for c in r] for r in rows[1:]
-                  ]
-                  table = Table(wrapped, colWidths=[70, 55, 260, 100])
-                  table.setStyle(TableStyle([
-                      ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#2eb886")),
-                      ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                      ("FONTSIZE", (0, 0), (-1, -1), 8),
-                      ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-                      ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                      ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f4f4f4")]),
-                  ]))
-                  elements.append(table)
-              else:
-                  elements.append(Paragraph("No findings reported.", styles["Normal"]))
-              doc.build(elements)
-
-          if __name__ == "__main__":
-              input_dir = sys.argv[1]
-              output_dir = sys.argv[2]
-              os.makedirs(output_dir, exist_ok=True)
-              found = False
-              for fname in os.listdir(input_dir):
-                  if fname.endswith(".sarif"):
-                      found = True
-                      src = os.path.join(input_dir, fname)
-                      out = os.path.join(output_dir, fname.replace(".sarif", ".pdf"))
-                      try:
-                          build_pdf(src, out)
-                          print(f"Converted {src} -> {out}")
-                      except Exception as exc:
-                          print(f"WARNING: failed to convert {src}: {exc}")
-              if not found:
-                  print("No .sarif files found to convert.")
-          PYEOF
-          python3 sarif_to_pdf.py sarif-input sarif-pdf
-
-      - name: Upload SARIF PDF reports
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: sarif-pdf-reports
-          path: sarif-pdf/*.pdf
-          retention-days: 7
-          if-no-files-found: ignore
-
   # ---------- Stage 3: Docker Build, SBOM & Image Scan ----------
   docker-build-scan:
     name: "Stage 3: Build, SBOM & Scan Docker Image"
@@ -401,7 +273,7 @@ jobs:
   notify:
     name: "Stage 5: Slack & Email Notification"
     runs-on: ubuntu-latest
-    needs: [build, secret-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, sarif-to-pdf, docker-build-scan, push]
+    needs: [build, secret-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push]
     if: always()
     steps:
       - name: Determine pipeline status
@@ -436,16 +308,14 @@ jobs:
       - name: Build email attachment list
         id: attachments
         run: |
-          # Only attach files that actually exist for this run — the SARIF-PDF
-          # and SBOM jobs can be skipped/empty on some triggers, and globbing
-          # a missing path breaks the mail action, which was the root cause
-          # of the earlier SARIF-to-PDF/email failure.
+          # Only attach files that actually exist for this run — some jobs
+          # can be skipped/empty on some triggers, and globbing a missing
+          # path breaks the mail action.
           files=""
           for pattern in \
             "artifacts/eslint-report/eslint-report.json" \
             "artifacts/notification/pipeline-report.txt" \
-            "artifacts/sbom-reports/*.json" \
-            "artifacts/sarif-pdf-reports/*.pdf" ; do
+            "artifacts/sbom-reports/*.json" ; do
             for match in $pattern; do
               if [ -f "$match" ]; then
                 files="$files,$match"
@@ -475,7 +345,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*Artifacts:* SARIF PDF reports, eslint-report.json, sbom-reports (SPDX + CycloneDX), app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
+                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
                       }
                     }
                   ]
@@ -504,5 +374,5 @@ jobs:
             <p><b>Triggered by:</b> ${{ github.actor }} (${{ github.event_name }})</p>
             <p><b>Commit:</b> <a href="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a></p>
             <p><b>Run logs:</b> <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
-            <p><b>Artifacts</b> (SARIF findings attached as readable PDFs, plus ESLint JSON, SBOM SPDX/CycloneDX and pipeline report; app-build &amp; docker-image are too large for email — download via link below):<br/>
+            <p><b>Artifacts</b> (ESLint JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts">Download all artifacts</a></p>
