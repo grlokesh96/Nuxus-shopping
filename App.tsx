@@ -1115,3 +1115,4 @@ const App = () => {
 };
 
 export default App;
+AWS_GITHUB_ACTIONS_ROLE:arn:aws:iam::123456789012:role/github-actions-ecr-role
