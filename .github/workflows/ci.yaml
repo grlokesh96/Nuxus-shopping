@@ -175,11 +175,45 @@ jobs:
           path: hadolint-report.sarif
           retention-days: 7
 
+  trufflehog-scan:
+    name: "Stage 2h: TruffleHog Secret Scan"
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout source (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install TruffleHog
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sudo sh -s -- -b /usr/local/bin
+
+      # Scans the full git history. Fails the job (exit 183) on verified or
+      # unverified-but-detected secrets; the JSON report is uploaded either way.
+      - name: Run TruffleHog scan
+        run: |
+          trufflehog git "file://$PWD" \
+            --results=verified,unknown \
+            --json \
+            --fail \
+            --no-update > trufflehog-report.json
+
+      - name: Upload TruffleHog report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trufflehog-report
+          path: trufflehog-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   # ---------- Stage 3: Docker Build, SBOM & Image Scan ----------
   docker-build-scan:
     name: "Stage 3: Build, SBOM & Scan Docker Image"
     runs-on: ubuntu-latest
-    needs: [secret-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan]
+    needs: [secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan]
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
     steps:
@@ -273,7 +307,7 @@ jobs:
   notify:
     name: "Stage 5: Slack & Email Notification"
     runs-on: ubuntu-latest
-    needs: [build, secret-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push]
+    needs: [build, secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push]
     if: always()
     steps:
       - name: Determine pipeline status
@@ -345,7 +379,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
+                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, trufflehog-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
                       }
                     }
                   ]
