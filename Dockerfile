@@ -5,9 +5,10 @@ FROM node:25-alpine AS builder
 
 WORKDIR /app
 
-# Install dependencies first for better layer caching
+# Copy dependency manifests first for better layer caching
 COPY package*.json ./
 
+# Install dependencies
 RUN npm ci
 
 # Copy application source
@@ -20,43 +21,23 @@ RUN npm run build
 # ──────────────────────────────────────────────────────────
 # Stage 2 — Production
 # ──────────────────────────────────────────────────────────
-FROM nginx:1.31.6-alpine3.24
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# Remove default Nginx configuration and static files
-RUN rm -rf /usr/share/nginx/html/* \
-           /etc/nginx/conf.d/*
+WORKDIR /usr/share/nginx/html
 
-# Copy production SPA assets
-COPY --from=builder /app/dist /usr/share/nginx/html
+# Copy compiled SPA
+COPY --from=builder /app/dist .
 
-# Copy hardened Nginx configuration
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
-# Create required directories and non-root user
-RUN addgroup -S nginxapp \
-    && adduser -S -D -H -G nginxapp nginxapp \
-    && mkdir -p /var/cache/nginx \
-               /var/run \
-               /var/log/nginx \
-    && chown -R nginxapp:nginxapp \
-               /usr/share/nginx/html \
-               /var/cache/nginx \
-               /var/run \
-               /var/log/nginx \
-               /etc/nginx
+# Copy static nginx configuration
+COPY nginx.conf /etc/nginx/nginx.conf
 
 # Nginx listens on an unprivileged port
 EXPOSE 8080
 
-# Container health check
-HEALTHCHECK --interval=30s \
-            --timeout=5s \
-            --start-period=10s \
-            --retries=3 \
-            CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+# Run as non-root
+USER nonroot:nonroot
 
-# Run Nginx as non-root
-USER nginxapp
+# Distroless has no shell
+ENTRYPOINT ["/usr/sbin/nginx"]
 
-# Keep Nginx in foreground
-CMD ["nginx", "-g", "daemon off;"]
+CMD ["-g", "daemon off;"]
