@@ -11,7 +11,8 @@ permissions:
   contents: read
 
 env:
-  IMAGE_NAME: lokeshzenbook/node-nuxus
+  DOCKERHUB_IMAGE: lokeshzenbook/node-nuxus
+  ACR_IMAGE_NAME: node-nuxus
 
 jobs:
 
@@ -21,12 +22,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v4
         with:
           node-version: 18
           cache: npm
@@ -51,12 +52,12 @@ jobs:
     needs: build
     steps:
       - name: Checkout source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Run Gitleaks secret scan
-        uses: gitleaks/gitleaks-action@v3
+        uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -69,7 +70,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
         with:
           scan-type: fs
@@ -108,6 +109,7 @@ jobs:
     needs: build
     permissions:
       security-events: write
+      contents: read
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -190,8 +192,7 @@ jobs:
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sudo sh -s -- -b /usr/local/bin
 
-      # Scans the full git history. Fails the job (exit 183) on verified or
-      # unverified-but-detected secrets; the JSON report is uploaded either way.
+      # Scans the full git history. Fails the job on detected secrets; report is uploaded either way.
       - name: Run TruffleHog scan
         run: |
           trufflehog git "file://$PWD" \
@@ -216,6 +217,8 @@ jobs:
     needs: [secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan]
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
+    env:
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -227,20 +230,23 @@ jobs:
       - name: Build Docker image
         run: |
           docker build \
-            -t ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
-            -t ${{ env.IMAGE_NAME }}:latest .
+            -t ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }} \
+            -t ${{ env.DOCKERHUB_IMAGE }}:latest \
+            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
+            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:latest \
+            .
 
       - name: Generate SBOM (SPDX format via Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }}
+          image: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
           format: spdx-json
           output-file: sbom-${{ steps.meta.outputs.image-tag }}.spdx.json
 
       - name: Generate SBOM (CycloneDX format via Syft)
         uses: anchore/sbom-action@v0
         with:
-          image: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }}
+          image: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
           format: cyclonedx-json
           output-file: sbom-${{ steps.meta.outputs.image-tag }}.cdx.json
 
@@ -254,20 +260,22 @@ jobs:
           retention-days: 30
 
       - name: Run Trivy Docker image scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }}
+          image-ref: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
 
-      # Both tags are saved into the tarball, not just the SHA tag
+      # All four tags are saved so both registries can push from the same tarball
       - name: Save Docker image as tarball
         run: |
           docker save \
-            ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
-            ${{ env.IMAGE_NAME }}:latest \
+            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }} \
+            ${{ env.DOCKERHUB_IMAGE }}:latest \
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:latest \
             -o image.tar
 
       - name: Upload image artifact
@@ -277,9 +285,9 @@ jobs:
           path: image.tar
           retention-days: 1
 
-  # ---------- Stage 4: Push to Docker Hub ----------
-  push:
-    name: "Stage 4: Push to Docker Hub"
+  # ---------- Stage 4a: Push to Docker Hub ----------
+  push-dockerhub:
+    name: "Stage 4a: Push to Docker Hub"
     runs-on: ubuntu-latest
     needs: docker-build-scan
     if: github.event_name != 'pull_request'
@@ -300,14 +308,43 @@ jobs:
 
       - name: Push Docker image
         run: |
-          docker push ${{ env.IMAGE_NAME }}:${{ needs.docker-build-scan.outputs.image-tag }}
-          docker push ${{ env.IMAGE_NAME }}:latest
+          docker push ${{ env.DOCKERHUB_IMAGE }}:${{ needs.docker-build-scan.outputs.image-tag }}
+          docker push ${{ env.DOCKERHUB_IMAGE }}:latest
+
+  # ---------- Stage 4b: Push to Azure Container Registry ----------
+  push-acr:
+    name: "Stage 4b: Push to Azure Container Registry"
+    runs-on: ubuntu-latest
+    needs: docker-build-scan
+    if: github.event_name != 'pull_request'
+    env:
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+    steps:
+      - name: Download image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: docker load -i image.tar
+
+      - name: Login to Azure Container Registry
+        uses: azure/docker-login@v2
+        with:
+          login-server: ${{ secrets.ACR_LOGIN_SERVER }}
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+
+      - name: Push image to ACR
+        run: |
+          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:${{ needs.docker-build-scan.outputs.image-tag }}
+          docker push ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:latest
 
   # ---------- Stage 5: Slack & Email Notification ----------
   notify:
     name: "Stage 5: Slack & Email Notification"
     runs-on: ubuntu-latest
-    needs: [build, secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push]
+    needs: [build, secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push-dockerhub, push-acr]
     if: always()
     steps:
       - name: Determine pipeline status
@@ -342,9 +379,6 @@ jobs:
       - name: Build email attachment list
         id: attachments
         run: |
-          # Only attach files that actually exist for this run — some jobs
-          # can be skipped/empty on some triggers, and globbing a missing
-          # path breaks the mail action.
           files=""
           for pattern in \
             "artifacts/eslint-report/eslint-report.json" \
