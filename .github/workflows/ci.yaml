@@ -292,10 +292,10 @@ jobs:
           retention-days: 30
 
       - name: Run Trivy Docker image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@master
         continue-on-error: true
         with:
-          image-ref: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
+          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
