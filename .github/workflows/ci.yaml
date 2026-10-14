@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
           cache: npm
 
       - name: Install dependencies
@@ -92,7 +92,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
         with:
           scan-type: fs
@@ -112,7 +112,7 @@ jobs:
 
       - name: Run Semgrep SAST scan
         run: |
-          python3 -m pip install --user semgrep
+          python3 -m pip install --user --break-system-packages semgrep
           export PATH="$PATH:$HOME/.local/bin"
           semgrep --version
           semgrep scan --config auto --sarif-output semgrep.sarif || true
@@ -157,7 +157,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install ESLint tooling
         run: npm install --no-save eslint @eslint/js globals typescript-eslint
@@ -267,9 +267,6 @@ jobs:
             TAGS="$TAGS -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest"
           fi
           docker build $TAGS .
-        env:
-          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
-          ACR_IMAGE_NAME: ${{ env.ACR_IMAGE_NAME }}
 
       - name: Generate SBOM (SPDX format via Syft)
         uses: anchore/sbom-action@v0
@@ -295,7 +292,7 @@ jobs:
           retention-days: 30
 
       - name: Run Trivy Docker image scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         continue-on-error: true
         with:
           image-ref: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
@@ -313,9 +310,6 @@ jobs:
             IMAGES="$IMAGES $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest"
           fi
           docker save $IMAGES -o image.tar
-        env:
-          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
-          ACR_IMAGE_NAME: ${{ env.ACR_IMAGE_NAME }}
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
