@@ -91,15 +91,12 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
-      - name: Run Trivy filesystem scan
-        uses: aquasecurity/trivy-action@0.28.0
-        continue-on-error: true
+      - name: 🛡️ Run Security Scan
+        uses: aquasecurity/trivy-action@0.36.0
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'HIGH,CRITICAL'
 
   semgrep-scan:
     name: "Stage 2c: Semgrep SAST Scan"
@@ -291,14 +288,14 @@ jobs:
             sbom-${{ steps.meta.outputs.image-tag }}.cdx.json
           retention-days: 30
 
-      - name: Run Trivy Docker image scan
-        uses: aquasecurity/trivy-action@0.28.0
-        continue-on-error: true
+      - name: 🛡️ Run Docker Image Security Scan
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-          exit-code: "1"
+          scan-type: 'image'
+          format: 'table'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
 
       # Only includes ACR tags when ACR credentials were provided
       - name: Save Docker image as tarball
