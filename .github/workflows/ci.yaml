@@ -45,6 +45,28 @@ jobs:
           path: .
           retention-days: 1
 
+  # ---------- Stage 1b: Check ACR credentials ----------
+  check-acr-credentials:
+    name: "Stage 1b: Check ACR Credentials"
+    runs-on: ubuntu-latest
+    outputs:
+      acr-enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Verify ACR secrets are provided
+        id: check
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          if [ -n "$ACR_LOGIN_SERVER" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "ACR credentials found: ACR build and push enabled"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "ACR credentials not provided: ACR push will be skipped"
+          fi
+
   # ---------- Stage 2: Security Scans (parallel) ----------
   secret-scan:
     name: "Stage 2a: Gitleaks Secret Scan"
@@ -214,11 +236,20 @@ jobs:
   docker-build-scan:
     name: "Stage 3: Build, SBOM & Scan Docker Image"
     runs-on: ubuntu-latest
-    needs: [secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan]
+    needs:
+      - secret-scan
+      - trufflehog-scan
+      - dependency-scan
+      - semgrep-scan
+      - codeql-scan
+      - eslint-scan
+      - hadolint-scan
+      - check-acr-credentials
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
     env:
       ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      ACR_ENABLED: ${{ needs.check-acr-credentials.outputs.acr-enabled }}
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -228,13 +259,17 @@ jobs:
         run: echo "image-tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: Build Docker image
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.image-tag }}
         run: |
-          docker build \
-            -t ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }} \
-            -t ${{ env.DOCKERHUB_IMAGE }}:latest \
-            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
-            -t ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:latest \
-            .
+          TAGS="-t $DOCKERHUB_IMAGE:$IMAGE_TAG -t $DOCKERHUB_IMAGE:latest"
+          if [ "$ACR_ENABLED" = "true" ]; then
+            TAGS="$TAGS -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest"
+          fi
+          docker build $TAGS .
+        env:
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          ACR_IMAGE_NAME: ${{ env.ACR_IMAGE_NAME }}
 
       - name: Generate SBOM (SPDX format via Syft)
         uses: anchore/sbom-action@v0
@@ -263,20 +298,24 @@ jobs:
         uses: aquasecurity/trivy-action@master
         continue-on-error: true
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }}
+          image-ref: ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }}
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: "1"
 
-      # All four tags are saved so both registries can push from the same tarball
+      # Only includes ACR tags when ACR credentials were provided
       - name: Save Docker image as tarball
+        env:
+          IMAGE_TAG: ${{ steps.meta.outputs.image-tag }}
         run: |
-          docker save \
-            ${{ env.DOCKERHUB_IMAGE }}:${{ steps.meta.outputs.image-tag }} \
-            ${{ env.DOCKERHUB_IMAGE }}:latest \
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:${{ steps.meta.outputs.image-tag }} \
-            ${{ env.ACR_LOGIN_SERVER }}/${{ env.ACR_IMAGE_NAME }}:latest \
-            -o image.tar
+          IMAGES="$DOCKERHUB_IMAGE:$IMAGE_TAG $DOCKERHUB_IMAGE:latest"
+          if [ "$ACR_ENABLED" = "true" ]; then
+            IMAGES="$IMAGES $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest"
+          fi
+          docker save $IMAGES -o image.tar
+        env:
+          DOCKERHUB_IMAGE: ${{ env.DOCKERHUB_IMAGE }}
+          ACR_IMAGE_NAME: ${{ env.ACR_IMAGE_NAME }}
 
       - name: Upload image artifact
         uses: actions/upload-artifact@v4
@@ -311,12 +350,16 @@ jobs:
           docker push ${{ env.DOCKERHUB_IMAGE }}:${{ needs.docker-build-scan.outputs.image-tag }}
           docker push ${{ env.DOCKERHUB_IMAGE }}:latest
 
-  # ---------- Stage 4b: Push to Azure Container Registry ----------
+  # ---------- Stage 4b: Push to Azure Container Registry (only if credentials provided) ----------
   push-acr:
     name: "Stage 4b: Push to Azure Container Registry"
     runs-on: ubuntu-latest
-    needs: docker-build-scan
-    if: github.event_name != 'pull_request'
+    needs:
+      - docker-build-scan
+      - check-acr-credentials
+    if: >-
+      github.event_name != 'pull_request' &&
+      needs.check-acr-credentials.outputs.acr-enabled == 'true'
     env:
       ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
     steps:
@@ -344,7 +387,19 @@ jobs:
   notify:
     name: "Stage 5: Slack & Email Notification"
     runs-on: ubuntu-latest
-    needs: [build, secret-scan, trufflehog-scan, dependency-scan, semgrep-scan, codeql-scan, eslint-scan, hadolint-scan, docker-build-scan, push-dockerhub, push-acr]
+    needs:
+      - build
+      - check-acr-credentials
+      - secret-scan
+      - trufflehog-scan
+      - dependency-scan
+      - semgrep-scan
+      - codeql-scan
+      - eslint-scan
+      - hadolint-scan
+      - docker-build-scan
+      - push-dockerhub
+      - push-acr
     if: always()
     steps:
       - name: Determine pipeline status
@@ -373,6 +428,7 @@ jobs:
           Repo     : ${{ github.repository }} (${{ github.ref_name }})
           Trigger  : ${{ github.actor }} (${{ github.event_name }})
           Commit   : ${{ github.sha }}
+          ACR Push : ${{ needs.check-acr-credentials.outputs.acr-enabled == 'true' && 'Enabled' || 'Skipped (no credentials)' }}
           Artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
           EOF
 
@@ -406,7 +462,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*${{ steps.status.outputs.status }}*: `${{ github.workflow }}`\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Triggered by:* ${{ github.actor }} (${{ github.event_name }})\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
+                        "text": "*${{ steps.status.outputs.status }}*: `${{ github.workflow }}`\n*Repo:* ${{ github.repository }}\n*Branch:* ${{ github.ref_name }}\n*Triggered by:* ${{ github.actor }} (${{ github.event_name }})\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}|${{ github.sha }}>\n*ACR Push:* ${{ needs.check-acr-credentials.outputs.acr-enabled == 'true' && 'Enabled' || 'Skipped (no credentials)' }}\n*Run:* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View logs>"
                       }
                     },
                     {
@@ -441,6 +497,7 @@ jobs:
             <p><b>Branch:</b> ${{ github.ref_name }}</p>
             <p><b>Triggered by:</b> ${{ github.actor }} (${{ github.event_name }})</p>
             <p><b>Commit:</b> <a href="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a></p>
+            <p><b>ACR Push:</b> ${{ needs.check-acr-credentials.outputs.acr-enabled == 'true' && 'Enabled' || 'Skipped (no credentials)' }}</p>
             <p><b>Run logs:</b> <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
             <p><b>Artifacts</b> (ESLint JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts">Download all artifacts</a></p>
