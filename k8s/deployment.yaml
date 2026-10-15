@@ -3,20 +3,20 @@ kind: Deployment
 metadata:
   name: node-nuxus
   labels:
-    app: node-nuxus
+    app: nuxus-shopping
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: node-nuxus
+      app: nuxus-shopping
   template:
     metadata:
       labels:
-        app: node-nuxus
+        app: nuxus-shopping
     spec:
       containers:
-        - name: node-nuxus
-          image: lokeshzenbook/node-nuxus:latest
+        - name: nuxus-shopping
+          image: lokeshzenbook/nuxus-shopping:latest
           ports:
             - containerPort: 3000
           imagePullPolicy: Always
