@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: node-nuxus-service
-  namespace: node-nuxus
+  name: nuxus-shopping-service
+  namespace: nuxus-shopping
 spec:
   type: ClusterIP
   selector:
-    app: node-nuxus
+    app: nuxus-shopping
   ports:
     - name: http
       port: 80
