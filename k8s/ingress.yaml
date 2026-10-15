@@ -1,18 +1,18 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: node-nuxus-ingress
-  namespace: node-nuxus
+  name: nuxus-shopping-ingress
+  namespace: nuxus-shopping
 spec:
   ingressClassName: nginx
   rules:
-    - host: node-nuxus.example.com
+    - host: nuxus-shopping.example.com
       http:
         paths:
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: node-nuxus-service
+                name: nuxus-shopping-service
                 port:
                   number: 80
