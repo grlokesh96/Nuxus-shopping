@@ -45,27 +45,27 @@ jobs:
           path: .
           retention-days: 1
 
-  # # ---------- Stage 1b: Check ACR credentials ----------
-  # check-acr-credentials:
-  #   name: "Stage 1b: Check ACR Credentials"
-  #   runs-on: ubuntu-latest
-  #   outputs:
-  #     acr-enabled: ${{ steps.check.outputs.enabled }}
-  #   steps:
-  #     - name: Verify ACR secrets are provided
-  #       id: check
-  #       env:
-  #         ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
-  #         ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
-  #         ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
-  #       run: |
-  #         if [ -n "$ACR_LOGIN_SERVER" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
-  #           echo "enabled=true" >> "$GITHUB_OUTPUT"
-  #           echo "ACR credentials found: ACR build and push enabled"
-  #         else
-  #           echo "enabled=false" >> "$GITHUB_OUTPUT"
-  #           echo "ACR credentials not provided: ACR push will be skipped"
-  #         fi
+  # ---------- Stage 1b: Check ACR credentials ----------
+  check-acr-credentials:
+    name: "Stage 1b: Check ACR Credentials"
+    runs-on: ubuntu-latest
+    outputs:
+      acr-enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Verify ACR secrets are provided
+        id: check
+        env:
+          ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+          ACR_USERNAME: ${{ secrets.ACR_USERNAME }}
+          ACR_PASSWORD: ${{ secrets.ACR_PASSWORD }}
+        run: |
+          if [ -n "$ACR_LOGIN_SERVER" ] && [ -n "$ACR_USERNAME" ] && [ -n "$ACR_PASSWORD" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "ACR credentials found: ACR build and push enabled"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "ACR credentials not provided: ACR push will be skipped"
+          fi
 
   # ---------- Stage 2: Security Scans (parallel) ----------
   secret-scan:
