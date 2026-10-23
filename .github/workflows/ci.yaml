@@ -414,7 +414,6 @@ jobs:
       - hadolint-scan
       - docker-build-scan
       - push-dockerhub
-      - push-acr
     if: always()
     steps:
       - name: Determine pipeline status
