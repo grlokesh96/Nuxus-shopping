@@ -21,7 +21,7 @@ body {
   color: #1e293b;
   background-color: #f8fafc;
   background-image:
-    radial-gradient(60rem 60rem at 115% -10%, rgba(129, 140, 248, 0.14), transparent 60%),
+    radial-gradient(60rem 60rem at 115% -10%, rgba(129, 140, 248, 0.14), transparent 50%),
     radial-gradient(50rem 50rem at -15% 25%, rgba(217, 70, 239, 0.1), transparent 55%),
     radial-gradient(42rem 42rem at 50% 120%, rgba(56, 189, 248, 0.1), transparent 60%);
   background-attachment: fixed;
