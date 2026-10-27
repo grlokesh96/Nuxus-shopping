@@ -12,7 +12,7 @@ export const INITIAL_PRODUCTS: Product[] = [
     sellerId: 's1',
     stock: 25,
     rating: 4.8,
-    reviewsCount: 124
+    reviewsCount: 125
   },
   {
     id: 'p2',
