@@ -57,7 +57,7 @@ const Navbar = ({ cartCount, user }: { cartCount: number, user: User | null }) =
   );
 
   const cartBadge = cartCount > 0 ? (
-    <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-gradient-to-r from-red-500 to-rose-500 px-1 text-[10px] font-bold text-white shadow-md ring-2 ring-white">
+    <span className="absolute -right-0.6 -top-0.6 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-gradient-to-r from-red-500 to-rose-500 px-1 text-[10px] font-bold text-white shadow-md ring-2 ring-white">
       {cartCount}
     </span>
   ) : null;
