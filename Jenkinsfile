@@ -10,33 +10,6 @@ pipeline {
         DOCKER_IMAGE = 'grlokesh96/nuxus-shopping'
     }
 
-    stages {
-        stage('Check Node.js') {
-            steps {
-                sh '''
-                    set -e
-                    node --version
-                    npm --version
-                '''
-            }
-        }
-
-        stage('Checkout Code') {
-            steps {
-                checkout scm
-            }
-        }
-
-        stage('Build Application') {
-            steps {
-                sh '''
-                    set -e
-                    npm ci
-                    npm run build
-                '''
-            }
-        }
-
         stage('Docker Build') {
             steps {
                 sh '''
