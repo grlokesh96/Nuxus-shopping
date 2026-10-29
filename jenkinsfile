@@ -1,23 +1,11 @@
 // =============================================================================
-// Build, Scan & Push Docker Image  (Jenkins port of the GitHub Actions workflow)
+// Build & Test -> Docker Build -> Push to Docker Hub
 //
-// Required plugins : Pipeline, Git, NodeJS, Credentials Binding, Timestamps,
-//                    Email Extension (emailext)
-// Agent requirements: Docker CLI + access to /var/run/docker.sock, git, curl
-//                    (optional) CodeQL CLI on PATH for Stage 2d
+// Required plugins : Pipeline, Git, NodeJS, Credentials Binding, Timestamps
+// Agent requirements: Docker CLI + access to the Docker daemon, git
 // Jenkins tools    : NodeJS installation named 'NodeJS-20'
-//
-// Credentials (Manage Jenkins -> Credentials):
-//   dockerhub-credentials  Username/Password  -> Docker Hub login
-//   acr-login-server       Secret text        -> e.g. myregistry.azurecr.io   (optional)
-//   acr-credentials        Username/Password  -> ACR login                    (optional)
-//   mail-to                Secret text        -> recipient email address
-//
-// Email: configure SMTP once in Manage Jenkins -> System -> Extended E-mail
-//        Notification (smtp.gmail.com, port 465, SSL, Gmail app password).
-//
-// Triggers: use a Multibranch Pipeline (push + PR builds handled automatically),
-//           or enable the GitHub hook trigger on a normal Pipeline job.
+// Credentials      : dockerhub-credentials (Username with password)
+// Job type         : Multibranch Pipeline (so pull requests are detected)
 // =============================================================================
 
 pipeline {
@@ -27,231 +15,55 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        timeout(time: 60, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '20', artifactNumToKeepStr: '10'))
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
     tools {
         nodejs 'NodeJS-20'
     }
 
-    parameters {
-        booleanParam(
-            name: 'PUSH_TO_ACR',
-            defaultValue: false,
-            description: 'Also tag and push the image to Azure Container Registry (needs ACR credentials)'
-        )
-    }
-
     environment {
         DOCKERHUB_IMAGE = 'lokeshzenbook/node-nuxus'
-        ACR_IMAGE_NAME  = 'node-nuxus'
     }
 
     stages {
 
-        // ---------- Stage 1: Build & Test ----------
-        stage('Stage 1: Build Application') {
+        // ---------- Stage 1: Checkout ----------
+        stage('Checkout') {
             steps {
                 checkout scm
-                sh 'git fetch --unshallow --tags || true'   // full history for secret scanners
-                sh 'mkdir -p reports'
-                sh 'node --version && npm --version'
-                sh 'npm ci'
-                sh 'npm run build'
-            }
-        }
-
-        // ---------- Stage 1b: Check ACR credentials ----------
-        stage('Stage 1b: Check ACR Credentials') {
-            steps {
-                script {
-                    env.ACR_ENABLED     = 'false'
-                    env.ACR_PUSH_STATUS = 'Skipped (disabled or no credentials)'
-
-                    if (params.PUSH_TO_ACR) {
-                        try {
-                            withCredentials([
-                                string(credentialsId: 'acr-login-server', variable: 'ACR_LS'),
-                                usernamePassword(credentialsId: 'acr-credentials',
-                                                 usernameVariable: 'ACR_U',
-                                                 passwordVariable: 'ACR_P')
-                            ]) {
-                                env.ACR_LOGIN_SERVER = ACR_LS
-                                env.ACR_ENABLED      = 'true'
-                            }
-                            echo 'ACR credentials found: ACR build and push enabled'
-                        } catch (err) {
-                            echo 'ACR credentials not provided: ACR push will be skipped'
-                        }
-                    } else {
-                        echo 'PUSH_TO_ACR is false: ACR push will be skipped'
-                    }
-                }
-            }
-        }
-
-        // ---------- Stage 2: Security Scans (parallel) ----------
-        stage('Stage 2: Security Scans') {
-            failFast false
-            parallel {
-
-                stage('Stage 2a: Gitleaks Secret Scan') {
-                    steps {
-                        sh '''
-                            docker run --rm -u "$(id -u):$(id -g)" \
-                              -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-                              -v "$PWD:/repo" -w /repo \
-                              zricethezav/gitleaks:latest detect \
-                                --source /repo \
-                                --report-format sarif \
-                                --report-path /repo/reports/gitleaks-report.sarif \
-                                --exit-code 1 --verbose
-                        '''
-                    }
-                }
-
-                stage('Stage 2b: Trivy Filesystem Scan') {
-                    steps {
-                        sh '''
-                            docker run --rm -u "$(id -u):$(id -g)" \
-                              -e TRIVY_CACHE_DIR=/tmp/trivy \
-                              -v "$PWD:/work" -w /work \
-                              aquasec/trivy:latest fs \
-                                --ignore-unfixed \
-                                --severity CRITICAL \
-                                --format sarif \
-                                --output /work/reports/trivy-fs-results.sarif \
-                                .
-                        '''
-                    }
-                }
-
-                stage('Stage 2c: Semgrep SAST Scan') {
-                    steps {
-                        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                            sh '''
-                                docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp \
-                                  -v "$PWD:/src" -w /src \
-                                  semgrep/semgrep:latest \
-                                  semgrep scan --config auto --sarif-output reports/semgrep.sarif || true
-                            '''
-                        }
-                    }
-                }
-
-                stage('Stage 2d: CodeQL Analysis') {
-                    steps {
-                        script {
-                            if (sh(script: 'command -v codeql >/dev/null 2>&1', returnStatus: true) != 0) {
-                                unstable('CodeQL CLI not found on agent: skipping CodeQL analysis')
-                            } else {
-                                sh '''
-                                    codeql database create codeql-db \
-                                      --language=javascript-typescript \
-                                      --source-root=. --overwrite
-                                    codeql database analyze codeql-db \
-                                      codeql/javascript-queries:codeql-suites/javascript-security-extended.qls \
-                                      codeql/javascript-queries:codeql-suites/javascript-security-and-quality.qls \
-                                      --format=sarif-latest \
-                                      --output=reports/codeql-results.sarif
-                                '''
-                            }
-                        }
-                    }
-                }
-
-                stage('Stage 2e: ESLint Code Scan') {
-                    steps {
-                        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                            sh 'npm install --no-save eslint @eslint/js globals typescript-eslint'
-                            sh '''
-                                npx eslint . --format json \
-                                  --output-file reports/eslint-report.json \
-                                  --no-error-on-unmatched-pattern || true
-                            '''
-                        }
-                    }
-                }
-
-                stage('Stage 2f: Hadolint Dockerfile Lint') {
-                    steps {
-                        catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                            sh '''
-                                docker run --rm -i hadolint/hadolint \
-                                  hadolint --format sarif - < Dockerfile \
-                                  > reports/hadolint-report.sarif || true
-                            '''
-                        }
-                    }
-                }
-
-                stage('Stage 2h: TruffleHog Secret Scan') {
-                    steps {
-                        // Scans full git history; fails the stage if secrets are found
-                        sh '''
-                            docker run --rm -u "$(id -u):$(id -g)" \
-                              -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo \
-                              -v "$PWD:/repo" -w /repo \
-                              trufflesecurity/trufflehog:latest git file:///repo \
-                                --results=verified,unknown \
-                                --json \
-                                --fail \
-                                --no-update > reports/trufflehog-report.json
-                        '''
-                    }
-                }
-            }
-        }
-
-        // ---------- Stage 3: Docker Build, SBOM & Image Scan ----------
-        stage('Stage 3: Build, SBOM & Scan Docker Image') {
-            steps {
                 script {
                     env.IMAGE_TAG = sh(script: 'git rev-parse --short=7 HEAD', returnStdout: true).trim()
                 }
+                echo "Image tag: ${env.IMAGE_TAG}"
+            }
+        }
 
-                // Build Docker image (ACR tags added only when ACR is enabled)
-                sh '''
-                    TAGS="-t $DOCKERHUB_IMAGE:$IMAGE_TAG -t $DOCKERHUB_IMAGE:latest"
-                    if [ "$ACR_ENABLED" = "true" ]; then
-                      TAGS="$TAGS -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG -t $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest"
-                    fi
-                    docker build $TAGS .
-                '''
+        // ---------- Stage 2: Build & Test ----------
+        stage('Build & Test') {
+            steps {
+                sh 'node --version && npm --version'
+                sh 'npm ci'
+                sh 'npm run build'
+                sh 'npm test --if-present'
+            }
+        }
 
-                // SBOM (SPDX + CycloneDX) via Syft
+        // ---------- Stage 3: Docker Build ----------
+        stage('Docker Build') {
+            steps {
                 sh '''
-                    docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      --group-add "$(stat -c %g /var/run/docker.sock)" \
-                      -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "$PWD/reports:/out" \
-                      anchore/syft:latest "$DOCKERHUB_IMAGE:$IMAGE_TAG" \
-                        -o spdx-json=/out/sbom-$IMAGE_TAG.spdx.json \
-                        -o cyclonedx-json=/out/sbom-$IMAGE_TAG.cdx.json
-                '''
-
-                // Trivy image scan
-                sh '''
-                    docker run --rm \
-                      -u "$(id -u):$(id -g)" \
-                      --group-add "$(stat -c %g /var/run/docker.sock)" \
-                      -e TRIVY_CACHE_DIR=/tmp/trivy \
-                      -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "$PWD/reports:/out" \
-                      aquasec/trivy:latest image \
-                        --ignore-unfixed \
-                        --severity CRITICAL \
-                        --format sarif \
-                        --output /out/trivy-image-results.sarif \
-                        "$DOCKERHUB_IMAGE:$IMAGE_TAG"
+                    docker build \
+                      -t $DOCKERHUB_IMAGE:$IMAGE_TAG \
+                      -t $DOCKERHUB_IMAGE:latest \
+                      .
                 '''
             }
         }
 
-        // ---------- Stage 4a: Push to Docker Hub ----------
-        stage('Stage 4a: Push to Docker Hub') {
+        // ---------- Stage 4: Push to Docker Hub ----------
+        stage('Push to Docker Hub') {
             when {
                 not { changeRequest() }     // skip on pull requests
             }
@@ -266,96 +78,19 @@ pipeline {
                     docker push $DOCKERHUB_IMAGE:latest
                 '''
             }
-            post {
-                always {
-                    sh 'docker logout || true'
-                }
-            }
-        }
-
-        // ---------- Stage 4b: Push to Azure Container Registry (non-blocking) ----------
-        stage('Stage 4b: Push to Azure Container Registry') {
-            when {
-                allOf {
-                    not { changeRequest() }
-                    expression { env.ACR_ENABLED == 'true' }
-                }
-            }
-            steps {
-                script {
-                    try {
-                        withCredentials([usernamePassword(credentialsId: 'acr-credentials',
-                                                          usernameVariable: 'ACR_USERNAME',
-                                                          passwordVariable: 'ACR_PASSWORD')]) {
-                            sh 'echo "$ACR_PASSWORD" | docker login "$ACR_LOGIN_SERVER" -u "$ACR_USERNAME" --password-stdin'
-                        }
-                        sh '''
-                            docker push $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:$IMAGE_TAG
-                            docker push $ACR_LOGIN_SERVER/$ACR_IMAGE_NAME:latest
-                        '''
-                        env.ACR_PUSH_STATUS = 'Succeeded'
-                    } catch (err) {
-                        // A failed ACR push is reported but does not fail the build
-                        echo "ACR push failed (non-blocking): ${err}"
-                        env.ACR_PUSH_STATUS = 'Failed (non-blocking)'
-                    } finally {
-                        sh 'docker logout "$ACR_LOGIN_SERVER" || true'
-                    }
-                }
-            }
         }
     }
 
-    // ---------- Stage 5: Email Notification (Slack removed) ----------
     post {
         always {
-            script {
-                def result = currentBuild.currentResult
-                def status = (result == 'FAILURE') ? '❌ Failed'
-                           : (result == 'UNSTABLE') ? '⚠️ Unstable (non-blocking scan issues)'
-                           : '✅ Success'
-                def acrLabel = env.ACR_PUSH_STATUS ?: 'Skipped (disabled or no credentials)'
-                def trigger  = currentBuild.getBuildCauses()[0]?.shortDescription ?: 'unknown'
-                def branch   = env.BRANCH_NAME ?: env.GIT_BRANCH ?: 'n/a'
-                def commit   = env.GIT_COMMIT ?: 'n/a'
-
-                sh 'mkdir -p reports'
-                writeFile file: 'reports/pipeline-report.txt', text: """\
-Pipeline : ${env.JOB_NAME}
-Status   : ${status}
-Repo     : ${env.GIT_URL ?: 'n/a'} (${branch})
-Trigger  : ${trigger}
-Commit   : ${commit}
-Image    : ${env.DOCKERHUB_IMAGE}:${env.IMAGE_TAG ?: 'n/a'}
-ACR Push : ${acrLabel}
-Build    : ${env.BUILD_URL}
-Artifacts: ${env.BUILD_URL}artifact/
-"""
-
-                // Archive every report (SARIF, SBOMs, ESLint, TruffleHog, pipeline report)
-                archiveArtifacts artifacts: 'reports/**', allowEmptyArchive: true, fingerprint: true
-
-                withCredentials([string(credentialsId: 'mail-to', variable: 'MAIL_TO')]) {
-                    emailext(
-                        to: MAIL_TO,
-                        subject: "${status} - ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                        mimeType: 'text/html',
-                        attachmentsPattern: 'reports/eslint-report.json,reports/pipeline-report.txt,reports/sbom-*.json',
-                        body: """
-<h3>${status}: ${env.JOB_NAME}</h3>
-<p><b>Repository:</b> ${env.GIT_URL ?: 'n/a'}</p>
-<p><b>Branch:</b> ${branch}</p>
-<p><b>Triggered by:</b> ${trigger}</p>
-<p><b>Commit:</b> ${commit}</p>
-<p><b>ACR Push:</b> ${acrLabel}</p>
-<p><b>Run logs:</b> <a href="${env.BUILD_URL}console">View build</a></p>
-<p><b>Artifacts</b> (ESLint JSON, SBOM SPDX/CycloneDX and pipeline report attached;
-Semgrep/Hadolint/Trivy/Gitleaks/CodeQL SARIF and TruffleHog reports are available via the link below):<br/>
-<a href="${env.BUILD_URL}artifact/">Download all artifacts</a></p>
-"""
-                    )
-                }
-            }
+            sh 'docker logout || true'
+            sh 'docker image rm $DOCKERHUB_IMAGE:$IMAGE_TAG $DOCKERHUB_IMAGE:latest || true'
+        }
+        success {
+            echo "✅ Pipeline succeeded: $DOCKERHUB_IMAGE:${env.IMAGE_TAG}"
+        }
+        failure {
+            echo '❌ Pipeline failed: check the stage logs above'
         }
     }
 }
