@@ -2,21 +2,28 @@
 pipeline {
     agent any
 
+    tools {
+        nodejs 'NodeJS-20'
+    }
+
     environment {
         DOCKER_IMAGE = 'grlokesh96/nuxus-shopping'
     }
 
     stages {
-        stage('Verify Pipeline') {
+        stage('Check Node.js') {
             steps {
-                echo 'Jenkins pipeline is working!'
+                sh '''
+                    set -e
+                    node --version
+                    npm --version
+                '''
             }
         }
 
         stage('Checkout Code') {
             steps {
                 checkout scm
-                sh 'ls -la'
             }
         }
 
@@ -24,8 +31,6 @@ pipeline {
             steps {
                 sh '''
                     set -e
-                    node --version
-                    npm --version
                     npm ci
                     npm run build
                 '''
@@ -35,8 +40,9 @@ pipeline {
         stage('Docker Build') {
             steps {
                 sh '''
-                    docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} .
-                    docker tag ${DOCKER_IMAGE}:${BUILD_NUMBER} ${DOCKER_IMAGE}:latest
+                    docker build \
+                      -t ${DOCKER_IMAGE}:${BUILD_NUMBER} \
+                      -t ${DOCKER_IMAGE}:latest .
                 '''
             }
         }
@@ -52,28 +58,14 @@ pipeline {
                 ]) {
                     sh '''
                         set -e
-                        echo "$DOCKER_PASS" | docker login \
-                            -u "$DOCKER_USER" --password-stdin
+                        echo "$DOCKER_PASS" |
+                            docker login -u "$DOCKER_USER" --password-stdin
 
                         docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}
                         docker push ${DOCKER_IMAGE}:latest
-
-                        docker logout
                     '''
                 }
             }
-        }
-    }
-
-    post {
-        success {
-            echo 'Build successful! Docker image pushed to Docker Hub.'
-        }
-        failure {
-            echo 'Pipeline failed. Check the Jenkins console output.'
-        }
-        always {
-            sh 'docker image prune -f || true'
         }
     }
 }
