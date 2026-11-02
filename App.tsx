@@ -46,7 +46,7 @@ const Navbar = ({ cartCount, user }: { cartCount: number, user: User | null }) =
     <Link
       key={path}
       to={path}
-      className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 ${
+      className={`px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-250 ${
         location.pathname === path
           ? 'bg-gradient-to-r from-indigo-50 to-violet-50 text-indigo-600'
           : 'text-slate-600 hover:text-indigo-600 hover:bg-slate-100/70'
