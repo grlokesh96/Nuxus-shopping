@@ -4,7 +4,7 @@ metadata:
   name: nuxus-shopping-service
   namespace: nuxus-shopping
 spec:
-  type: ClusterIP
+  type: NodeIP
   selector:
     app: nuxus-shopping
   ports:
