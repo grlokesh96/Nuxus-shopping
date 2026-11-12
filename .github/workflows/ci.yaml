@@ -285,6 +285,52 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  # ---------- Stage 2i: Kubernetes Manifest Security Scan (Kubescape) ----------
+  kubescape-scan:
+    name: "Stage 2i: Kubernetes Manifest Scan (Kubescape)"
+    runs-on: ubuntu-latest
+    needs: build
+    continue-on-error: true
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Kubescape
+        run: |
+          curl -s https://raw.githubusercontent.com/kubescape/kubescape/master/install.sh | /bin/bash
+          echo "$HOME/.kubescape/bin" >> "$GITHUB_PATH"
+
+      - name: Run Kubescape scan
+        run: |
+          kubescape version
+          # Change "." to your manifests/Helm path (e.g. k8s/) to narrow the scan
+          kubescape scan framework nsa,mitre . \
+            --format json --output kubescape-report.json \
+            --verbose || true
+          kubescape scan framework nsa,mitre . \
+            --format sarif --output kubescape.sarif || true
+
+      - name: Summarize results
+        if: always()
+        run: |
+          if [ -s kubescape-report.json ]; then
+            {
+              echo "### Kubescape results"
+              jq -r '"- Compliance score: \(.summaryDetails.complianceScore // "n/a")%\n- Failed controls: \(.summaryDetails.controls | map(select(.status.status=="failed")) | length)"' kubescape-report.json
+            } >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Upload Kubescape reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kubescape-report
+          path: |
+            kubescape-report.json
+            kubescape.sarif
+          retention-days: 7
+          if-no-files-found: ignore
+
   trufflehog-scan:
     name: "Stage 2h: TruffleHog Secret Scan"
     runs-on: ubuntu-latest
@@ -331,6 +377,7 @@ jobs:
       - eslint-scan
       - hadolint-scan
       - kube-bench-scan
+      - kubescape-scan
       - check-acr-credentials
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
@@ -491,6 +538,7 @@ jobs:
       - eslint-scan
       - hadolint-scan
       - kube-bench-scan
+      - kubescape-scan
       - docker-build-scan
       - push-dockerhub
     if: always()
@@ -508,13 +556,14 @@ jobs:
           R_ESLINT: ${{ needs.eslint-scan.result }}
           R_HADOLINT: ${{ needs.hadolint-scan.result }}
           R_KUBEBENCH: ${{ needs.kube-bench-scan.result }}
+          R_KUBESCAPE: ${{ needs.kubescape-scan.result }}
           R_DOCKER: ${{ needs.docker-build-scan.result }}
           R_HUB: ${{ needs.push-dockerhub.result }}
         run: |
           # push-acr is intentionally excluded: its failure must not fail the pipeline
           FAILED=false
           for r in "$R_BUILD" "$R_CHECK" "$R_SECRET" "$R_TRUFFLE" "$R_DEPS" \
-                   "$R_SEMGREP" "$R_CODEQL" "$R_ESLINT" "$R_HADOLINT" "$R_KUBEBENCH" "$R_DOCKER" "$R_HUB"; do
+                   "$R_SEMGREP" "$R_CODEQL" "$R_ESLINT" "$R_HADOLINT" "$R_KUBEBENCH" "$R_KUBESCAPE" "$R_DOCKER" "$R_HUB"; do
             if [ "$r" = "failure" ]; then FAILED=true; fi
           done
           if [ "$FAILED" = "true" ]; then
@@ -572,6 +621,7 @@ jobs:
           for pattern in \
             "artifacts/eslint-report/eslint-report.json" \
             "artifacts/kube-bench-report/kube-bench-report.json" \
+            "artifacts/kubescape-report/kubescape-report.json" \
             "artifacts/notification/pipeline-report.txt" \
             "artifacts/sbom-reports/*.json" ; do
             for match in $pattern; do
@@ -603,7 +653,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, kube-bench-report, trufflehog-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), trivy-fs-sarif, trivy-image-sarif, app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
+                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, kube-bench-report, kubescape-report, trufflehog-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), trivy-fs-sarif, trivy-image-sarif, app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
                       }
                     }
                   ]
@@ -633,5 +683,5 @@ jobs:
             <p><b>Commit:</b> <a href="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a></p>
             <p><b>ACR Push:</b> ${{ steps.acr.outputs.label }}</p>
             <p><b>Run logs:</b> <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
-            <p><b>Artifacts</b> (ESLint JSON, Kube-bench JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint/Trivy SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
+            <p><b>Artifacts</b> (ESLint JSON, Kube-bench JSON, Kubescape JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint/Trivy SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts">Download all artifacts</a></p>
