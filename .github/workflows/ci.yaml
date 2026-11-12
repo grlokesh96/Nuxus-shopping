@@ -614,25 +614,6 @@ jobs:
           Artifacts: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts
           EOF
 
-      - name: Build email attachment list
-        id: attachments
-        run: |
-          files=""
-          for pattern in \
-            "artifacts/eslint-report/eslint-report.json" \
-            "artifacts/kube-bench-report/kube-bench-report.json" \
-            "artifacts/kubescape-report/kubescape-report.json" \
-            "artifacts/notification/pipeline-report.txt" \
-            "artifacts/sbom-reports/*.json" ; do
-            for match in $pattern; do
-              if [ -f "$match" ]; then
-                files="$files,$match"
-              fi
-            done
-          done
-          files="${files#,}"
-          echo "list=$files" >> "$GITHUB_OUTPUT"
-
       - name: Send Slack notification with artifacts
         uses: slackapi/slack-github-action@v1.27.0
         with:
@@ -664,6 +645,31 @@ jobs:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
           SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
 
+      - name: Build email attachment list (all generated reports)
+        id: attachments
+        run: |
+          # Every file downloaded from the pipeline, except the two large artifacts:
+          #   app-build    = the whole repo
+          #   docker-image = image.tar, too big for Gmail's 25 MB limit
+          files=""
+          total=0
+          while IFS= read -r f; do
+            files="$files,$f"
+            total=$(( total + $(stat -c%s "$f") ))
+          done < <(find artifacts \
+                     \( -path artifacts/app-build -o -path artifacts/docker-image \) -prune \
+                     -o -type f -print | sort)
+          files="${files#,}"
+
+          echo "Attaching files:"
+          echo "$files" | tr ',' '\n'
+          echo "Total size: $(( total / 1024 )) KB"
+          if [ "$total" -gt 24000000 ]; then
+            echo "::warning::Attachments exceed ~24 MB; Gmail may reject this email"
+          fi
+
+          echo "list=$files" >> "$GITHUB_OUTPUT"
+
       - name: Send email notification with artifacts
         uses: dawidd6/action-send-mail@v3
         with:
@@ -683,5 +689,6 @@ jobs:
             <p><b>Commit:</b> <a href="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a></p>
             <p><b>ACR Push:</b> ${{ steps.acr.outputs.label }}</p>
             <p><b>Run logs:</b> <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
-            <p><b>Artifacts</b> (ESLint JSON, Kube-bench JSON, Kubescape JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint/Trivy SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
+            <p><b>Attached reports:</b> TruffleHog JSON, Trivy FS and image SARIF, Semgrep SARIF, ESLint JSON, Hadolint SARIF, Kube-bench JSON, Kubescape JSON + SARIF, SBOM (SPDX + CycloneDX) and the pipeline report.<br/>
+            <b>Not attached (too large):</b> app-build and docker-image. Get them here:<br/>
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts">Download all artifacts</a></p>
