@@ -208,6 +208,83 @@ jobs:
           path: hadolint-report.sarif
           retention-days: 7
 
+  # ---------- Stage 2g: Kubernetes Security Audit (CIS) ----------
+  kube-bench-scan:
+    name: "Stage 2g: Kubernetes Security Audit (Kube-bench)"
+    runs-on: ubuntu-latest
+    needs: build
+    continue-on-error: true
+    env:
+      KUBE_BENCH_IMAGE: docker.io/aquasec/kube-bench:v0.10.6   # pin; bump after checking releases
+    steps:
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: kube-bench
+
+      - name: Run kube-bench as in-cluster Job
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: kube-bench
+          spec:
+            backoffLimit: 0
+            template:
+              spec:
+                hostPID: true
+                restartPolicy: Never
+                nodeSelector:
+                  node-role.kubernetes.io/control-plane: ""
+                tolerations:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+                    effect: NoSchedule
+                containers:
+                  - name: kube-bench
+                    image: ${KUBE_BENCH_IMAGE}
+                    command: ["kube-bench", "run", "--json"]
+                    volumeMounts:
+                      - { name: var-lib-etcd, mountPath: /var/lib/etcd, readOnly: true }
+                      - { name: var-lib-kubelet, mountPath: /var/lib/kubelet, readOnly: true }
+                      - { name: etc-systemd, mountPath: /etc/systemd, readOnly: true }
+                      - { name: etc-kubernetes, mountPath: /etc/kubernetes, readOnly: true }
+                      - { name: usr-bin, mountPath: /usr/local/mount-from-host/bin, readOnly: true }
+                volumes:
+                  - { name: var-lib-etcd, hostPath: { path: /var/lib/etcd } }
+                  - { name: var-lib-kubelet, hostPath: { path: /var/lib/kubelet } }
+                  - { name: etc-systemd, hostPath: { path: /etc/systemd } }
+                  - { name: etc-kubernetes, hostPath: { path: /etc/kubernetes } }
+                  - { name: usr-bin, hostPath: { path: /usr/bin } }
+          EOF
+
+          if ! kubectl wait --for=condition=complete job/kube-bench --timeout=180s; then
+            kubectl describe job/kube-bench || true
+            kubectl logs job/kube-bench || true
+            exit 1
+          fi
+          kubectl logs job/kube-bench > kube-bench-report.json
+
+      - name: Summarize results
+        if: always()
+        run: |
+          if [ -s kube-bench-report.json ]; then
+            {
+              echo "### Kube-bench (CIS) results"
+              jq -r '.Totals | "- PASS: \(.total_pass)\n- FAIL: \(.total_fail)\n- WARN: \(.total_warn)\n- INFO: \(.total_info)"' kube-bench-report.json
+            } >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+
+      - name: Upload Kube-bench report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kube-bench-report
+          path: kube-bench-report.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   trufflehog-scan:
     name: "Stage 2h: TruffleHog Secret Scan"
     runs-on: ubuntu-latest
@@ -253,6 +330,7 @@ jobs:
       - codeql-scan
       - eslint-scan
       - hadolint-scan
+      - kube-bench-scan
       - check-acr-credentials
     outputs:
       image-tag: ${{ steps.meta.outputs.image-tag }}
@@ -412,6 +490,7 @@ jobs:
       - codeql-scan
       - eslint-scan
       - hadolint-scan
+      - kube-bench-scan
       - docker-build-scan
       - push-dockerhub
     if: always()
@@ -428,13 +507,14 @@ jobs:
           R_CODEQL: ${{ needs.codeql-scan.result }}
           R_ESLINT: ${{ needs.eslint-scan.result }}
           R_HADOLINT: ${{ needs.hadolint-scan.result }}
+          R_KUBEBENCH: ${{ needs.kube-bench-scan.result }}
           R_DOCKER: ${{ needs.docker-build-scan.result }}
           R_HUB: ${{ needs.push-dockerhub.result }}
         run: |
           # push-acr is intentionally excluded: its failure must not fail the pipeline
           FAILED=false
           for r in "$R_BUILD" "$R_CHECK" "$R_SECRET" "$R_TRUFFLE" "$R_DEPS" \
-                   "$R_SEMGREP" "$R_CODEQL" "$R_ESLINT" "$R_HADOLINT" "$R_DOCKER" "$R_HUB"; do
+                   "$R_SEMGREP" "$R_CODEQL" "$R_ESLINT" "$R_HADOLINT" "$R_KUBEBENCH" "$R_DOCKER" "$R_HUB"; do
             if [ "$r" = "failure" ]; then FAILED=true; fi
           done
           if [ "$FAILED" = "true" ]; then
@@ -491,6 +571,7 @@ jobs:
           files=""
           for pattern in \
             "artifacts/eslint-report/eslint-report.json" \
+            "artifacts/kube-bench-report/kube-bench-report.json" \
             "artifacts/notification/pipeline-report.txt" \
             "artifacts/sbom-reports/*.json" ; do
             for match in $pattern; do
@@ -522,7 +603,7 @@ jobs:
                       "type": "section",
                       "text": {
                         "type": "mrkdwn",
-                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, trufflehog-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), trivy-fs-sarif, trivy-image-sarif, app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
+                        "text": "*Artifacts:* semgrep-sarif, hadolint-report, kube-bench-report, trufflehog-report, eslint-report.json, sbom-reports (SPDX + CycloneDX), trivy-fs-sarif, trivy-image-sarif, app-build, docker-image\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts|Download artifacts>"
                       }
                     }
                   ]
@@ -552,5 +633,5 @@ jobs:
             <p><b>Commit:</b> <a href="${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}">${{ github.sha }}</a></p>
             <p><b>ACR Push:</b> ${{ steps.acr.outputs.label }}</p>
             <p><b>Run logs:</b> <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}">View run</a></p>
-            <p><b>Artifacts</b> (ESLint JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint/Trivy SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
+            <p><b>Artifacts</b> (ESLint JSON, Kube-bench JSON, SBOM SPDX/CycloneDX and pipeline report attached; Semgrep/Hadolint/Trivy SARIF reports, app-build &amp; docker-image are available via the link below):<br/>
             <a href="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts">Download all artifacts</a></p>
